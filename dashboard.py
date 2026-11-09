@@ -1,16 +1,16 @@
 import json
 import os
 import re
-import secrets
+import uuid
 from datetime import datetime, timezone
-from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, urlencode, urlparse
 
+from kalshi_client import load_client_from_env
 from kalshi_perps import (
     PaperAccount,
-    ema,
+    calculate_all_indicators,
     fetch_candles,
     fetch_kalshi_markets,
     get_direction,
@@ -21,32 +21,11 @@ from kalshi_perps import (
 HOST = "127.0.0.1"
 PORT = 8765
 STATIC_DIR = Path(__file__).parent / "static"
-GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID", "").strip()
-sessions = {}
-account = PaperAccount()
-bot = {"running": False, "symbol": "PF_XBTUSD", "interval": "15m", "action": "paused"}
-
-
-def calculate_rsi(values, period=14):
-    if len(values) <= period:
-        return None
-    changes = [current - previous for previous, current in zip(values, values[1:])][-period:]
-    gains = sum(change for change in changes if change > 0) / period
-    losses = -sum(change for change in changes if change < 0) / period
-    if losses == 0:
-        return 100.0 if gains else 50.0
-    return 100 - 100 / (1 + gains / losses)
-
-
-def calculate_macd(values):
-    if len(values) < 26:
-        return None
-    line = [
-        ema(values[:index + 1], 12) - ema(values[:index + 1], 26)
-        for index in range(25, len(values))
-    ]
-    signal = ema(line[-9:], 9)
-    return {"line": line[-1], "signal": signal, "histogram": line[-1] - signal}
+MAX_LEVERAGE = 20
+account = PaperAccount(max_leverage=MAX_LEVERAGE, position_fraction=0.10, daily_loss_limit=0.05)
+bot = {"running": False, "symbol": "PF_XBTUSD", "interval": "15m", "action": "paused", "mode": "paper"}
+kalshi_client = load_client_from_env()
+trading_mode = "live" if kalshi_client else "paper"
 
 
 def calculate_session_vwap(candles):
@@ -98,24 +77,54 @@ def analyze_price_action(candles, period=20):
     }
 
 
+def get_live_status():
+    """Fetch live Kalshi balance and positions if API credentials are configured."""
+    if not kalshi_client:
+        return {"connected": False, "balance": None, "positions": [], "env": None}
+    try:
+        balance = kalshi_client.get_balance()
+        positions = kalshi_client.get_positions()
+        return {
+            "connected": True,
+            "balance": balance,
+            "positions": positions.get("positions", []) if isinstance(positions, dict) else [],
+            "env": "demo" if kalshi_client.demo else "prod",
+        }
+    except Exception as error:
+        return {"connected": False, "balance": None, "positions": [], "env": None, "error": str(error)}
+
+
 def build_snapshot(symbol, interval):
     candles = fetch_candles(symbol, interval)
     closes = [float(candle["close"]) for candle in candles]
-    direction, fast, slow = get_direction(closes)
+    indicators, composite_direction = calculate_all_indicators(candles, closes)
     price = closes[-1]
     prior_candles = candles[-21:-1]
     range_high = max(float(candle["high"]) for candle in prior_candles)
     range_low = min(float(candle["low"]) for candle in prior_candles)
 
+    indicators["rangeHigh"] = range_high
+    indicators["rangeLow"] = range_low
+    indicators["priceAction"] = analyze_price_action(candles)
+    indicators["sessionVwap"] = calculate_session_vwap(candles)
+
     if bot["running"] and bot["symbol"] == symbol and bot["interval"] == interval:
-        bot["action"] = account.update(direction, price)
+        bot["action"] = account.update(composite_direction, price)
 
     position = account.position
     equity = account.equity(price)
-    markets = fetch_kalshi_markets(20)
+    markets = fetch_kalshi_markets(30)
+    live = get_live_status()
+
     return {
         "symbol": symbol,
         "interval": interval,
+        "tradingMode": trading_mode,
+        "kalshiConnected": live["connected"],
+        "kalshiEnv": live.get("env"),
+        "kalshiBalance": live["balance"],
+        "kalshiPositions": live["positions"],
+        "kalshiError": live.get("error"),
         "candles": [
             {
                 "time": int(candle["time"]),
@@ -128,21 +137,15 @@ def build_snapshot(symbol, interval):
             for candle in candles
         ],
         "price": price,
-        "signal": direction,
-        "indicators": {
-            "emaFast": fast,
-            "emaSlow": slow,
-            "rsi14": calculate_rsi(closes),
-            "macd": calculate_macd(closes),
-            "vwap": calculate_session_vwap(candles),
-            "priceAction": analyze_price_action(candles),
-            "rangeHigh": range_high,
-            "rangeLow": range_low,
-        },
+        "signal": composite_direction,
+        "indicators": indicators,
         "account": {
             "equity": equity,
             "cash": account.cash,
             "dailyPnl": equity - account.day_start_equity if account.day else 0,
+            "peakEquity": account.peak_equity,
+            "winRate": account.win_rate(),
+            "totalTrades": account.total_trades,
             "position": None if position is None else {
                 "side": "long" if position.side > 0 else "short",
                 "quantity": position.quantity,
@@ -182,19 +185,15 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def session_user(self):
-        cookies = SimpleCookie(self.headers.get("Cookie", ""))
-        session_cookie = cookies.get("kal_session")
-        return sessions.get(session_cookie.value) if session_cookie else None
-
     def do_GET(self):
         parsed = urlparse(self.path)
         if parsed.path == "/api/config":
-            self.send_json(200, {"googleClientId": GOOGLE_CLIENT_ID or None})
-            return
-        if parsed.path == "/api/auth/me":
-            user = self.session_user()
-            self.send_json(200, {"authenticated": user is not None, "user": user})
+            self.send_json(200, {
+                "tradingMode": trading_mode,
+                "kalshiConnected": kalshi_client is not None,
+                "kalshiEnv": "demo" if kalshi_client and kalshi_client.demo else ("prod" if kalshi_client else None),
+                "maxLeverage": MAX_LEVERAGE,
+            })
             return
         if parsed.path == "/api/snapshot":
             query = parse_qs(parsed.query)
@@ -226,14 +225,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = urlparse(self.path).path
-        if path == "/api/auth/google":
-            self.complete_google_sign_in()
-            return
-        if path == "/api/auth/logout":
-            self.sign_out()
-            return
         if path == "/api/settings":
             self.update_settings()
+            return
+        if path == "/api/kalshi/order":
+            self.place_kalshi_order()
             return
         if path != "/api/bot":
             self.send_error(404)
@@ -263,7 +259,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def update_settings(self):
         if bot["running"]:
-            self.send_json(409, {"error": "Stop the paper bot before changing account settings"})
+            self.send_json(409, {"error": "Stop the bot before changing settings"})
             return
         try:
             length = int(self.headers.get("Content-Length", "0"))
@@ -275,9 +271,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
             if not isinstance(auto_size, bool):
                 raise ValueError("autoSize must be a boolean")
             if not 1 <= starting_balance <= 10_000_000:
-                raise ValueError("Starting paper balance must be between $1 and $10,000,000")
-            if leverage not in range(1, 6):
-                raise ValueError("Simulated leverage must be between 1x and 5x")
+                raise ValueError("Starting balance must be between $1 and $10,000,000")
+            if leverage not in range(1, MAX_LEVERAGE + 1):
+                raise ValueError(f"Leverage must be between 1x and {MAX_LEVERAGE}x")
             if not 1 <= order_notional <= 1_000_000:
                 raise ValueError("Manual order size must be between $1 and $1,000,000")
             account.reset(starting_balance, leverage, auto_size, order_notional)
@@ -288,47 +284,36 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 "orderNotional": account.order_notional,
             }})
         except (KeyError, ValueError, json.JSONDecodeError):
-            self.send_json(400, {"error": "Invalid account settings"})
+            self.send_json(400, {"error": "Invalid settings"})
 
-    def complete_google_sign_in(self):
-        if not GOOGLE_CLIENT_ID:
-            self.send_json(503, {"error": "Set GOOGLE_CLIENT_ID to enable Google sign-in"})
+    def place_kalshi_order(self):
+        if not kalshi_client:
+            self.send_json(503, {"error": "Set KALSHI_KEY_ID and KALSHI_KEY_PATH to enable live Kalshi trading"})
             return
         try:
             length = int(self.headers.get("Content-Length", "0"))
-            credential = json.loads(self.rfile.read(length)).get("credential")
-            if not credential:
-                raise ValueError("Missing Google credential")
-        except (ValueError, json.JSONDecodeError):
-            self.send_json(400, {"error": "Invalid Google sign-in request"})
-            return
-        try:
-            from google.auth.transport.requests import Request as GoogleRequest
-            from google.oauth2 import id_token
-
-            claims = id_token.verify_oauth2_token(credential, GoogleRequest(), GOOGLE_CLIENT_ID)
-        except ImportError:
-            self.send_json(503, {"error": "Install requirements.txt to enable Google token verification"})
-            return
-        except Exception:
-            self.send_json(401, {"error": "Google credential could not be verified"})
-            return
-        if not claims.get("email_verified"):
-            self.send_json(401, {"error": "Google account email is not verified"})
-            return
-        session_id = secrets.token_urlsafe(32)
-        user = {"name": claims.get("name", ""), "email": claims.get("email", "")}
-        sessions[session_id] = user
-        cookie = f"kal_session={session_id}; Path=/; HttpOnly; SameSite=Lax; Max-Age=28800"
-        self.send_json(200, {"authenticated": True, "user": user}, {"Set-Cookie": cookie})
-
-    def sign_out(self):
-        cookies = SimpleCookie(self.headers.get("Cookie", ""))
-        session_cookie = cookies.get("kal_session")
-        if session_cookie:
-            sessions.pop(session_cookie.value, None)
-        cookie = "kal_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0"
-        self.send_json(200, {"authenticated": False}, {"Set-Cookie": cookie})
+            payload = json.loads(self.rfile.read(length))
+            ticker = str(payload["ticker"]).upper()
+            side = str(payload["side"]).lower()
+            count = int(payload["count"])
+            price = float(payload["price"])
+            if side not in ("bid", "ask"):
+                raise ValueError("side must be bid or ask")
+            if not re.fullmatch(r"[A-Z0-9\-]{1,40}", ticker):
+                raise ValueError("Invalid ticker")
+            if count < 1 or count > 100_000:
+                raise ValueError("count must be between 1 and 100,000")
+            if not 0.01 <= price <= 0.99:
+                raise ValueError("price must be between $0.01 and $0.99")
+            result = kalshi_client.place_order(
+                ticker, side, count, price,
+                client_order_id=str(uuid.uuid4()),
+            )
+            self.send_json(200, {"order": result})
+        except (KeyError, ValueError, json.JSONDecodeError) as error:
+            self.send_json(400, {"error": str(error)})
+        except Exception as error:
+            self.send_json(502, {"error": str(error)})
 
     def log_message(self, format_string, *args):
         return
@@ -336,8 +321,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
 def main():
     server = ThreadingHTTPServer((HOST, PORT), DashboardHandler)
-    print(f"Paper trading dashboard: http://{HOST}:{PORT}")
-    print("Local-only server. No live orders or exchange balance access.")
+    print(f"Signal desk: http://{HOST}:{PORT}")
+    if trading_mode == "live":
+        env_label = "demo" if kalshi_client.demo else "PRODUCTION"
+        print(f"Kalshi API connected ({env_label}). Live order placement enabled.")
+    else:
+        print("Paper mode. Set KALSHI_KEY_ID and KALSHI_KEY_PATH for live Kalshi trading.")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

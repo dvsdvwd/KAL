@@ -3,8 +3,8 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#eef1eb">
-  <title>KAL | Signal Desk</title>
+  <meta name="theme-color" content="#0a0e0c">
+  <title>KAL/DESK — Signal Trading Terminal</title>
   <link rel="stylesheet" href="/styles.css">
   <script defer src="/app.js"></script>
 </head>
@@ -15,10 +15,14 @@
         <span class="brand-mark">K</span>
         <span class="brand-name">KAL<span>/</span>DESK</span>
       </a>
-      <div class="topbar-center"><span class="data-dot"></span> PUBLIC MARKET DATA <span class="topbar-divider">/</span> PAPER MODE</div>
+      <div class="topbar-center">
+        <span class="data-dot" id="liveDot"></span>
+        <span id="liveStatus">PUBLIC MARKET DATA</span>
+        <span class="topbar-divider">/</span>
+        <span id="modeLabel">PAPER MODE</span>
+      </div>
       <div class="topbar-right">
-        <span class="local-label" id="authState">LOCAL PAPER SESSION</span>
-        <div id="googleSignInArea"><button class="google-setup" type="button" disabled title="Set GOOGLE_CLIENT_ID to enable sign-in">GOOGLE SETUP REQUIRED</button></div>
+        <span class="env-badge" id="envBadge">PAPER</span>
       </div>
     </header>
 
@@ -28,7 +32,7 @@
           <div class="eyebrow">MARKET OPERATIONS <span>01 / 01</span></div>
           <h1>Signal desk</h1>
         </div>
-        <div class="session-clock"><span class="data-dot"></span><span id="updatedAt">Connecting to public feeds…</span></div>
+        <div class="session-clock"><span class="data-dot active"></span><span id="updatedAt">Connecting to public feeds…</span></div>
       </section>
 
       <section class="control-row" aria-label="Market controls">
@@ -59,9 +63,9 @@
         </div>
       </section>
 
-      <section class="account-strip" aria-label="Paper account summary">
+      <section class="account-strip" aria-label="Account summary">
         <div class="equity-cell">
-          <span class="metric-label">PAPER EQUITY <span class="paper-tag">SIMULATED</span></span>
+          <span class="metric-label" id="equityLabel">PAPER EQUITY <span class="paper-tag">SIMULATED</span></span>
           <strong id="equityValue">$10,000.00</strong>
         </div>
         <div class="metric-cell">
@@ -69,8 +73,12 @@
           <strong id="pnlValue">$0.00</strong>
         </div>
         <div class="metric-cell">
-          <span class="metric-label">OPEN PAPER POSITION</span>
+          <span class="metric-label">OPEN POSITION</span>
           <strong id="positionValue">None</strong>
+        </div>
+        <div class="metric-cell">
+          <span class="metric-label">WIN RATE</span>
+          <strong id="winRateValue">—</strong>
         </div>
         <div class="metric-cell bot-metric">
           <span class="metric-label">BOT STATE</span>
@@ -87,8 +95,10 @@
                 <div class="price-heading"><strong id="currentPrice">--</strong><span id="priceChange" class="price-change">LIVE FEED</span></div>
               </div>
               <div class="signal-block">
-                <span class="metric-label">DIRECTION</span>
+                <span class="metric-label">COMPOSITE SIGNAL</span>
                 <span id="signalBadge" class="signal-badge flat">FLAT</span>
+                <div class="confidence-bar"><div id="confidenceFill" class="confidence-fill"></div></div>
+                <span class="confidence-label" id="confidenceLabel">CONFIDENCE 0%</span>
               </div>
             </div>
             <div class="chart-wrap" id="chartWrap">
@@ -98,14 +108,80 @@
             <div class="chart-foot"><span>OHLC CANDLES</span><span id="chartRange">--</span></div>
           </section>
 
+          <section class="indicator-grid">
+            <div class="indicator-card panel">
+              <div class="indicator-card-header"><span class="metric-label">EMA TREND</span><span class="indicator-tag" id="emaTag">9 / 21</span></div>
+              <strong id="emaRead">--</strong>
+              <div class="indicator-desc">Fast vs slow EMA crossover</div>
+            </div>
+            <div class="indicator-card panel">
+              <div class="indicator-card-header"><span class="metric-label">RSI</span><span class="indicator-tag">14 PERIOD</span></div>
+              <strong id="rsiRead">--</strong>
+              <div class="rsi-bar"><div id="rsiFill" class="rsi-fill"></div></div>
+              <div class="indicator-desc" id="rsiDesc">Relative strength index</div>
+            </div>
+            <div class="indicator-card panel">
+              <div class="indicator-card-header"><span class="metric-label">MACD</span><span class="indicator-tag">12/26/9</span></div>
+              <strong id="macdRead">--</strong>
+              <div class="indicator-desc" id="macdDesc">Momentum signal</div>
+            </div>
+            <div class="indicator-card panel">
+              <div class="indicator-card-header"><span class="metric-label">BOLLINGER</span><span class="indicator-tag">20 / 2σ</span></div>
+              <strong id="bollingerRead">--</strong>
+              <div class="indicator-desc" id="bollingerDesc">Volatility bands</div>
+            </div>
+            <div class="indicator-card panel">
+              <div class="indicator-card-header"><span class="metric-label">STOCHASTIC</span><span class="indicator-tag">14 PERIOD</span></div>
+              <strong id="stochRead">--</strong>
+              <div class="stoch-bar"><div id="stochFill" class="stoch-fill"></div></div>
+              <div class="indicator-desc" id="stochDesc">Oscillator</div>
+            </div>
+            <div class="indicator-card panel">
+              <div class="indicator-card-header"><span class="metric-label">ADX</span><span class="indicator-tag">14 PERIOD</span></div>
+              <strong id="adxRead">--</strong>
+              <div class="indicator-desc" id="adxDesc">Trend strength</div>
+            </div>
+            <div class="indicator-card panel">
+              <div class="indicator-card-header"><span class="metric-label">ATR</span><span class="indicator-tag">14 PERIOD</span></div>
+              <strong id="atrRead">--</strong>
+              <div class="indicator-desc">Volatility range</div>
+            </div>
+            <div class="indicator-card panel">
+              <div class="indicator-card-header"><span class="metric-label">MOMENTUM</span><span class="indicator-tag">10 PERIOD</span></div>
+              <strong id="momentumRead">--</strong>
+              <div class="indicator-desc" id="momentumDesc">Rate of change</div>
+            </div>
+            <div class="indicator-card panel">
+              <div class="indicator-card-header"><span class="metric-label">VWAP</span><span class="indicator-tag">SESSION</span></div>
+              <strong id="vwapRead">--</strong>
+              <div class="indicator-desc">Volume-weighted price</div>
+            </div>
+            <div class="indicator-card panel">
+              <div class="indicator-card-header"><span class="metric-label">RANGE</span><span class="indicator-tag">20 CANDLE</span></div>
+              <strong id="rangeRead">--</strong>
+              <div class="indicator-desc" id="rangeDesc">High / Low</div>
+            </div>
+            <div class="indicator-card panel">
+              <div class="indicator-card-header"><span class="metric-label">PRICE ACTION</span><span class="indicator-tag">EXPANSION</span></div>
+              <strong id="priceActionRead">--</strong>
+              <div class="indicator-desc" id="priceActionDetail">--</div>
+            </div>
+            <div class="indicator-card panel signal-vote-card">
+              <div class="indicator-card-header"><span class="metric-label">SIGNAL SCORE</span><span class="indicator-tag">WEIGHTED</span></div>
+              <strong id="scoreRead">0</strong>
+              <div class="score-bar"><div id="scoreFill" class="score-fill"></div></div>
+              <div class="indicator-desc" id="scoreDesc">Composite vote</div>
+            </div>
+          </section>
+
           <section class="markets-panel panel" id="marketsPanel">
             <div class="section-heading">
               <div><div class="eyebrow">EVENT CONTRACTS</div><h2>Kalshi market board</h2></div>
-              <span class="read-only-tag">READ ONLY</span>
+              <span class="read-only-tag" id="kalshiReadTag">READ ONLY</span>
             </div>
             <div class="market-table-wrap">
               <table>
-                <thead><tr><th>CONTRACT</th><th>YES BID</th><th>YES ASK</th><th>ENDS</th></tr></thead>
+                <thead><tr><th>CONTRACT</th><th>YES BID</th><th>YES ASK</th><th>ENDS</th><th id="tradeColHeader" hidden></th></tr></thead>
                 <tbody id="marketsBody"><tr><td colspan="4" class="table-message">Loading open contracts…</td></tr></tbody>
               </table>
             </div>
@@ -114,25 +190,20 @@
 
         <aside class="side-column">
           <section class="signal-panel panel">
-            <div class="section-heading compact"><div><div class="eyebrow">INDICATOR STACK</div><h2>Market read</h2></div></div>
-            <div class="indicator-row"><span>EMA TREND <small>9 / 21</small></span><strong id="emaRead">--</strong></div>
-            <div class="indicator-row"><span>RSI <small>14 PERIOD</small></span><strong id="rsiRead">--</strong></div>
-            <div class="indicator-row"><span>MACD <small>12 / 26 / 9</small></span><strong id="macdRead">--</strong></div>
-            <div class="indicator-row"><span>SESSION VWAP <small>UTC · VOLUME WEIGHTED</small></span><strong id="vwapRead">--</strong></div>
-            <div class="indicator-row"><span>RANGE HIGH <small>PREVIOUS 20 CANDLES</small></span><strong id="rangeHighRead">--</strong></div>
-            <div class="indicator-row"><span>RANGE LOW <small>PREVIOUS 20 CANDLES</small></span><strong id="rangeLowRead">--</strong></div>
-            <div class="indicator-row"><span>PRICE ACTION <small>VS PREVIOUS 20 CANDLES</small></span><strong id="priceActionRead">--<small id="priceActionDetail">--</small></strong></div>
-            <p class="signal-note" id="signalNote">Paper entry: EMA 9/21 UP or DOWN. Exit: FLAT/opposite signal or the 2% daily stop. 20-bar highs/lows are reference levels, not guaranteed turns. Expansion flags react after a move starts.</p>
-            <div class="risk-rule"><span>MAX PAPER EXPOSURE</span><strong>5% margin · 5× sim cap</strong></div>
-            <div class="risk-rule"><span>DAILY LOSS STOP</span><strong>2% of day-start equity</strong></div>
+            <div class="section-heading compact"><div><div class="eyebrow">BOT CONTROL</div><h2>Auto trader</h2></div></div>
+            <div class="indicator-row"><span>COMPOSITE DIRECTION <small>WEIGHTED VOTE</small></span><strong id="directionRead">FLAT</strong></div>
+            <div class="indicator-row"><span>CONFIDENCE <small>0-100 SCALE</small></span><strong id="confidenceRead">0%</strong></div>
+            <div class="indicator-row"><span>RISK EXPOSURE <small>MAX MARGIN</small></span><strong>10% equity × leverage</strong></div>
+            <div class="indicator-row"><span>DAILY LOSS STOP <small>AUTO HALT</small></span><strong>5% of day-start equity</strong></div>
+            <p class="signal-note">Multi-signal engine combines EMA, RSI, MACD, Bollinger, Stochastic, ADX, Momentum, ROC, and VWAP into a weighted directional vote. Bot opens/exit positions when the composite signal changes. Paper mode is simulated; live mode requires Kalshi API credentials.</p>
             <button class="bot-button" id="botButton" type="button">START PAPER BOT <span aria-hidden="true">→</span></button>
             <p class="bot-caption" id="botCaption">Paper simulation only. No live orders are sent.</p>
           </section>
 
           <section class="settings-panel panel">
-            <div class="section-heading compact"><div><div class="eyebrow">PAPER CONFIGURATION</div><h2>Balance &amp; sizing</h2></div></div>
+            <div class="section-heading compact"><div><div class="eyebrow">CONFIGURATION</div><h2>Balance &amp; sizing</h2></div></div>
             <label class="settings-field">
-              <span>STARTING PAPER BALANCE · USD</span>
+              <span>STARTING BALANCE · USD</span>
               <input id="paperBalance" type="number" min="1" max="10000000" step="100" value="10000">
             </label>
             <label class="settings-field">
@@ -141,17 +212,19 @@
                 <option value="1">1×</option>
                 <option value="2">2×</option>
                 <option value="3">3×</option>
-                <option value="4">4×</option>
-                <option value="5">5× · SIMULATION CAP</option>
+                <option value="5">5×</option>
+                <option value="10">10×</option>
+                <option value="15">15×</option>
+                <option value="20">20× · MAX</option>
               </select>
             </label>
-            <label class="auto-size-field"><input id="autoSize" type="checkbox" checked><span>AUTO SIZE · 5% EQUITY MARGIN</span></label>
+            <label class="auto-size-field"><input id="autoSize" type="checkbox" checked><span>AUTO SIZE · 10% EQUITY MARGIN</span></label>
             <label class="settings-field" id="manualNotionalField">
               <span>MANUAL NOTIONAL · MIN $1</span>
               <input id="orderNotional" type="number" min="1" max="1000000" step="1" value="100" disabled>
             </label>
-            <p class="settings-note">Manual size is capped by the 5% margin rule and selected simulation leverage. Applying resets paper history.</p>
-            <button class="save-settings-button" id="saveSettings" type="button">APPLY PAPER SETTINGS</button>
+            <p class="settings-note">Auto sizing uses 10% of equity as margin, multiplied by leverage for notional. Manual size is capped by the same rule. Applying settings resets paper history.</p>
+            <button class="save-settings-button" id="saveSettings" type="button">APPLY SETTINGS</button>
           </section>
 
           <section class="contract-panel panel" id="contractPanel" hidden>
@@ -160,21 +233,35 @@
             <div class="contract-quote"><span>YES BID</span><strong id="contractBid">--</strong></div>
             <div class="contract-quote"><span>YES ASK</span><strong id="contractAsk">--</strong></div>
             <div class="probability-track"><span id="probabilityFill"></span></div>
-            <p class="signal-note">Kalshi contracts are displayed for context only. This prototype does not trade event contracts.</p>
+            <div id="liveOrderForm" class="live-order-form" hidden>
+              <div class="eyebrow" style="margin-top:14px">PLACE LIVE ORDER</div>
+              <label class="settings-field"><span>SIDE</span>
+                <select id="orderSide"><option value="bid">BUY YES (BID)</option><option value="ask">SELL YES (ASK)</option></select>
+              </label>
+              <label class="settings-field"><span>QUANTITY (CONTRACTS)</span>
+                <input id="orderCount" type="number" min="1" max="100000" step="1" value="10">
+              </label>
+              <label class="settings-field"><span>PRICE (0.01 - 0.99)</span>
+                <input id="orderPrice" type="number" min="0.01" max="0.99" step="0.01" value="0.50">
+              </label>
+              <button class="place-order-button" id="placeOrderButton" type="button">PLACE LIVE ORDER</button>
+              <p class="settings-note">This sends a real order to Kalshi. Requires verified account and funded balance.</p>
+            </div>
+            <p class="signal-note" id="contractNote">Kalshi contracts are displayed for context. Live trading requires API credentials.</p>
           </section>
 
           <section class="connect-panel panel">
-            <div class="eyebrow">ACCOUNT CONNECTION</div>
-            <h2>Private access not connected</h2>
-            <p>Google sign-in needs an OAuth client configured in Google Cloud. Exchange balances and live trading also need a selected venue and protected API credentials.</p>
-            <span class="connect-status"><span class="state-dot"></span> PAPER BALANCE ONLY</span>
+            <div class="eyebrow">KALSHI API CONNECTION</div>
+            <h2 id="connectTitle">Not connected</h2>
+            <p id="connectDesc">Set KALSHI_KEY_ID and KALSHI_KEY_PATH environment variables to enable live Kalshi trading. Requires a verified Kalshi account and RSA private key.</p>
+            <span class="connect-status" id="connectStatus"><span class="state-dot"></span> <span id="connectStatusText">PAPER MODE</span></span>
           </section>
         </aside>
       </section>
 
       <footer class="app-footer">
-        <span>LOCAL PAPER DESK · NO ORDERS ROUTED</span>
-        <span>Public feed data may be delayed or incomplete. Simulation excludes fees, funding and slippage.</span>
+        <span id="footerLeft">PAPER DESK · NO ORDERS ROUTED</span>
+        <span>Multi-signal engine: EMA, RSI, MACD, Bollinger, Stochastic, ADX, ATR, Momentum, ROC, VWAP. Simulation excludes fees, funding and slippage.</span>
       </footer>
       <div class="toast" id="toast" role="status" aria-live="polite"></div>
     </main>
