@@ -19,10 +19,10 @@
         <span class="data-dot" id="liveDot"></span>
         <span id="liveStatus">PUBLIC MARKET DATA</span>
         <span class="topbar-divider">/</span>
-        <span id="modeLabel">PAPER MODE</span>
+        <span id="modeLabel">KRAKEN SIGNALS · PAPER TRADING</span>
       </div>
       <div class="topbar-right">
-        <span class="env-badge" id="envBadge">PAPER</span>
+        <span class="env-badge" id="envBadge">SIMULATION</span>
       </div>
     </header>
 
@@ -98,7 +98,7 @@
                 <span class="metric-label">COMPOSITE SIGNAL</span>
                 <span id="signalBadge" class="signal-badge flat">FLAT</span>
                 <div class="confidence-bar"><div id="confidenceFill" class="confidence-fill"></div></div>
-                <span class="confidence-label" id="confidenceLabel">CONFIDENCE 0%</span>
+                <span class="confidence-label" id="confidenceLabel">VOTE ALIGNMENT 0%</span>
               </div>
             </div>
             <div class="chart-wrap" id="chartWrap">
@@ -192,10 +192,10 @@
           <section class="signal-panel panel">
             <div class="section-heading compact"><div><div class="eyebrow">BOT CONTROL</div><h2>Auto trader</h2></div></div>
             <div class="indicator-row"><span>COMPOSITE DIRECTION <small>WEIGHTED VOTE</small></span><strong id="directionRead">FLAT</strong></div>
-            <div class="indicator-row"><span>CONFIDENCE <small>0-100 SCALE</small></span><strong id="confidenceRead">0%</strong></div>
-            <div class="indicator-row"><span>RISK EXPOSURE <small>MAX MARGIN</small></span><strong>10% equity × leverage</strong></div>
-            <div class="indicator-row"><span>DAILY LOSS STOP <small>AUTO HALT</small></span><strong>5% of day-start equity</strong></div>
-            <p class="signal-note">Multi-signal engine combines EMA, RSI, MACD, Bollinger, Stochastic, ADX, Momentum, ROC, and VWAP into a weighted directional vote. Bot opens/exit positions when the composite signal changes. Paper mode is simulated; live mode requires Kalshi API credentials.</p>
+              <div class="indicator-row"><span>SIGNAL AGREEMENT <small>NOT A WIN PROBABILITY</small></span><strong id="confidenceRead">0%</strong></div>
+              <div class="indicator-row"><span>POSITION SIZE <small>PAPER ONLY</small></span><strong>5% equity · max 2×</strong></div>
+              <div class="indicator-row"><span>DAILY LOSS STOP <small>SIMULATED</small></span><strong>5% of day-start equity</strong></div>
+              <p class="signal-note">The strategy waits for aligned EMA, MACD, and ADX signals. Agreement is not a prediction of win rate. The bot only simulates positions; it cannot send exchange orders.</p>
             <button class="bot-button" id="botButton" type="button">START PAPER BOT <span aria-hidden="true">→</span></button>
             <p class="bot-caption" id="botCaption">Paper simulation only. No live orders are sent.</p>
           </section>
@@ -203,27 +203,22 @@
           <section class="settings-panel panel">
             <div class="section-heading compact"><div><div class="eyebrow">CONFIGURATION</div><h2>Balance &amp; sizing</h2></div></div>
             <label class="settings-field">
-              <span>STARTING BALANCE · USD</span>
-              <input id="paperBalance" type="number" min="1" max="10000000" step="100" value="10000">
+              <span>SIMULATED STARTING BALANCE · USD</span>
+              <input id="paperBalance" type="number" min="0.01" max="10000000" step="0.01" value="0.01">
             </label>
             <label class="settings-field">
               <span>SIMULATED LEVERAGE</span>
               <select id="paperLeverage">
-                <option value="1">1×</option>
-                <option value="2">2×</option>
-                <option value="3">3×</option>
-                <option value="5">5×</option>
-                <option value="10">10×</option>
-                <option value="15">15×</option>
-                <option value="20">20× · MAX</option>
+                <option value="1">1× · LOWER RISK</option>
+                <option value="2">2× · SIMULATION CAP</option>
               </select>
             </label>
             <label class="auto-size-field"><input id="autoSize" type="checkbox" checked><span>AUTO SIZE · 10% EQUITY MARGIN</span></label>
             <label class="settings-field" id="manualNotionalField">
-              <span>MANUAL NOTIONAL · MIN $1</span>
-              <input id="orderNotional" type="number" min="1" max="1000000" step="1" value="100" disabled>
+              <span>MANUAL PAPER SIZE · USD</span>
+              <input id="orderNotional" type="number" min="0.01" max="1000000" step="0.01" value="100" disabled>
             </label>
-            <p class="settings-note">Auto sizing uses 10% of equity as margin, multiplied by leverage for notional. Manual size is capped by the same rule. Applying settings resets paper history.</p>
+            <p class="settings-note">Auto size uses up to 5% of equity as simulated margin. Manual size is capped by the same rule. Changes reset paper history.</p>
             <button class="save-settings-button" id="saveSettings" type="button">APPLY SETTINGS</button>
           </section>
 
@@ -233,35 +228,32 @@
             <div class="contract-quote"><span>YES BID</span><strong id="contractBid">--</strong></div>
             <div class="contract-quote"><span>YES ASK</span><strong id="contractAsk">--</strong></div>
             <div class="probability-track"><span id="probabilityFill"></span></div>
-            <div id="liveOrderForm" class="live-order-form" hidden>
-              <div class="eyebrow" style="margin-top:14px">PLACE LIVE ORDER</div>
-              <label class="settings-field"><span>SIDE</span>
-                <select id="orderSide"><option value="bid">BUY YES (BID)</option><option value="ask">SELL YES (ASK)</option></select>
-              </label>
-              <label class="settings-field"><span>QUANTITY (CONTRACTS)</span>
-                <input id="orderCount" type="number" min="1" max="100000" step="1" value="10">
-              </label>
-              <label class="settings-field"><span>PRICE (0.01 - 0.99)</span>
-                <input id="orderPrice" type="number" min="0.01" max="0.99" step="0.01" value="0.50">
-              </label>
-              <button class="place-order-button" id="placeOrderButton" type="button">PLACE LIVE ORDER</button>
-              <p class="settings-note">This sends a real order to Kalshi. Requires verified account and funded balance.</p>
-            </div>
-            <p class="signal-note" id="contractNote">Kalshi contracts are displayed for context. Live trading requires API credentials.</p>
+            <p class="signal-note" id="contractNote">Kalshi event contracts are shown separately for context. This paper bot trades no Kalshi contracts.</p>
           </section>
 
           <section class="connect-panel panel">
-            <div class="eyebrow">KALSHI API CONNECTION</div>
-            <h2 id="connectTitle">Not connected</h2>
-            <p id="connectDesc">Set KALSHI_KEY_ID and KALSHI_KEY_PATH environment variables to enable live Kalshi trading. Requires a verified Kalshi account and RSA private key.</p>
-            <span class="connect-status" id="connectStatus"><span class="state-dot"></span> <span id="connectStatusText">PAPER MODE</span></span>
+            <div class="eyebrow">KRAKEN FUTURES · READ-ONLY</div>
+            <h2 id="connectTitle">Account not connected</h2>
+            <p id="connectDesc">Connect a Kraken Futures read-only API key to view account balances and positions. This app does not send live orders.</p>
+            <div class="auth-form" id="authForm">
+              <label class="settings-field" for="dashboardPassword">
+                <span>DASHBOARD PASSWORD</span>
+                <input id="dashboardPassword" type="password" autocomplete="current-password" placeholder="Sign in to view account data">
+              </label>
+              <button class="save-settings-button" id="loginButton" type="button">SIGN IN</button>
+            </div>
+            <div class="auth-actions">
+              <span class="connect-status" id="connectStatus"><span class="state-dot"></span> <span id="connectStatusText">ACCOUNT LOCKED</span></span>
+              <button class="google-setup" id="logoutButton" type="button" hidden>SIGN OUT</button>
+            </div>
+            <p class="settings-note" id="accountSummary">Private balance and position data are shown only after sign-in.</p>
           </section>
         </aside>
       </section>
 
       <footer class="app-footer">
-        <span id="footerLeft">PAPER DESK · NO ORDERS ROUTED</span>
-        <span>Multi-signal engine: EMA, RSI, MACD, Bollinger, Stochastic, ADX, ATR, Momentum, ROC, VWAP. Simulation excludes fees, funding and slippage.</span>
+        <span id="footerLeft">PAPER DESK · NO LIVE ORDERS</span>
+        <span>Signals are research indicators, not win probabilities. Paper results exclude real execution, fees, funding and slippage.</span>
       </footer>
       <div class="toast" id="toast" role="status" aria-live="polite"></div>
     </main>

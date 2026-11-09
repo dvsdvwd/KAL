@@ -274,11 +274,20 @@ def score_signal(indicators):
 
     score = ((up_weight - down_weight) / total_weight) * 100
     confidence = min(100, max(0, abs(score)))
-    if score > 15:
+    # A directional label is only emitted when trend, momentum, and strength
+    # agree. This filters weak/contradictory setups; it is not a win-probability
+    # estimate and does not imply a particular hit rate.
+    adx_value = indicators.get("adx")
+    macd_histogram = macd_data["histogram"] if macd_data else None
+    aligned_up = ema_signal == "UP" and macd_histogram is not None and macd_histogram > 0
+    aligned_down = ema_signal == "DOWN" and macd_histogram is not None and macd_histogram < 0
+
+    if score >= 40 and adx_value is not None and adx_value >= 18 and aligned_up:
         direction = "UP"
-    elif score < -15:
+    elif score <= -40 and adx_value is not None and adx_value >= 18 and aligned_down:
         direction = "DOWN"
     else:
         direction = "FLAT"
+        detail["filter"] = "Needs stronger EMA, MACD, and ADX agreement"
 
     return direction, round(score, 1), round(confidence, 1), detail

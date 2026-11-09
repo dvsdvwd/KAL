@@ -1,13 +1,15 @@
 import json
 import os
 import re
-import uuid
+import threading
+import time
+from http.cookies import SimpleCookie
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlencode, urlparse
 
-from kalshi_client import load_client_from_env
+from kraken_futures import load_client_from_env
 from kalshi_perps import (
     PaperAccount,
     calculate_all_indicators,
@@ -16,16 +18,28 @@ from kalshi_perps import (
     get_direction,
     market_yes_quotes,
 )
+from session_auth import (
+    SESSION_COOKIE,
+    check_password,
+    is_session_token_valid,
+    make_session_token,
+    password_is_configured,
+)
 
 
-HOST = "127.0.0.1"
-PORT = 8765
+HOST = "0.0.0.0"
+PORT = int(os.environ.get("PORT", "5000"))
 STATIC_DIR = Path(__file__).parent / "static"
-MAX_LEVERAGE = 20
-account = PaperAccount(max_leverage=MAX_LEVERAGE, position_fraction=0.10, daily_loss_limit=0.05)
+MAX_LEVERAGE = 2
+account = PaperAccount(
+    starting_cash=0.01,
+    max_leverage=MAX_LEVERAGE,
+    position_fraction=0.05,
+    daily_loss_limit=0.05,
+)
 bot = {"running": False, "symbol": "PF_XBTUSD", "interval": "15m", "action": "paused", "mode": "paper"}
-kalshi_client = load_client_from_env()
-trading_mode = "live" if kalshi_client else "paper"
+kraken_client = load_client_from_env()
+LOGIN_FAILURES = {}
 
 
 def calculate_session_vwap(candles):
@@ -77,24 +91,23 @@ def analyze_price_action(candles, period=20):
     }
 
 
-def get_live_status():
-    """Fetch live Kalshi balance and positions if API credentials are configured."""
-    if not kalshi_client:
-        return {"connected": False, "balance": None, "positions": [], "env": None}
+def get_kraken_status():
+    """Return private exchange data only to an authenticated dashboard session."""
+    if not kraken_client:
+        return {"configured": False, "connected": False, "wallets": [], "positions": []}
     try:
-        balance = kalshi_client.get_balance()
-        positions = kalshi_client.get_positions()
+        return {"configured": True, **kraken_client.get_account_summary()}
+    except Exception:
         return {
-            "connected": True,
-            "balance": balance,
-            "positions": positions.get("positions", []) if isinstance(positions, dict) else [],
-            "env": "demo" if kalshi_client.demo else "prod",
+            "configured": True,
+            "connected": False,
+            "wallets": [],
+            "positions": [],
+            "error": "Could not read the Kraken Futures account. Check the API key and environment.",
         }
-    except Exception as error:
-        return {"connected": False, "balance": None, "positions": [], "env": None, "error": str(error)}
 
 
-def build_snapshot(symbol, interval):
+def build_snapshot(symbol, interval, include_private=False):
     candles = fetch_candles(symbol, interval)
     closes = [float(candle["close"]) for candle in candles]
     indicators, composite_direction = calculate_all_indicators(candles, closes)
@@ -108,23 +121,16 @@ def build_snapshot(symbol, interval):
     indicators["priceAction"] = analyze_price_action(candles)
     indicators["sessionVwap"] = calculate_session_vwap(candles)
 
-    if bot["running"] and bot["symbol"] == symbol and bot["interval"] == interval:
-        bot["action"] = account.update(composite_direction, price)
-
     position = account.position
     equity = account.equity(price)
     markets = fetch_kalshi_markets(30)
-    live = get_live_status()
 
     return {
         "symbol": symbol,
         "interval": interval,
-        "tradingMode": trading_mode,
-        "kalshiConnected": live["connected"],
-        "kalshiEnv": live.get("env"),
-        "kalshiBalance": live["balance"],
-        "kalshiPositions": live["positions"],
-        "kalshiError": live.get("error"),
+        "tradingMode": "paper",
+        "authenticated": include_private,
+        "kraken": get_kraken_status() if include_private else None,
         "candles": [
             {
                 "time": int(candle["time"]),
@@ -189,10 +195,17 @@ class DashboardHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         if parsed.path == "/api/config":
             self.send_json(200, {
-                "tradingMode": trading_mode,
-                "kalshiConnected": kalshi_client is not None,
-                "kalshiEnv": "demo" if kalshi_client and kalshi_client.demo else ("prod" if kalshi_client else None),
+                "tradingMode": "paper",
+                "authConfigured": password_is_configured(),
+                "krakenConfigured": kraken_client is not None,
+                "krakenEnvironment": kraken_client.environment if kraken_client else None,
                 "maxLeverage": MAX_LEVERAGE,
+            })
+            return
+        if parsed.path == "/api/auth/me":
+            self.send_json(200, {
+                "authenticated": self.is_authenticated(),
+                "authConfigured": password_is_configured(),
             })
             return
         if parsed.path == "/api/snapshot":
@@ -203,7 +216,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self.send_json(400, {"error": "Invalid symbol or interval"})
                 return
             try:
-                self.send_json(200, build_snapshot(symbol, interval))
+                self.send_json(
+                    200,
+                    build_snapshot(symbol, interval, include_private=self.is_authenticated()),
+                )
             except Exception as error:
                 self.send_json(502, {"error": str(error)})
             return
@@ -225,11 +241,18 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = urlparse(self.path).path
+        if path == "/api/auth/login":
+            self.login()
+            return
+        if path == "/api/auth/logout":
+            self.send_json(200, {"authenticated": False}, {
+                "Set-Cookie": self.session_cookie("", max_age=0),
+            })
+            return
+        if not self.require_auth():
+            return
         if path == "/api/settings":
             self.update_settings()
-            return
-        if path == "/api/kalshi/order":
-            self.place_kalshi_order()
             return
         if path != "/api/bot":
             self.send_error(404)
@@ -244,18 +267,69 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 if not re.fullmatch(r"[A-Z0-9_]{1,24}", symbol) or interval not in {"1m", "5m", "15m", "1h"}:
                     self.send_json(400, {"error": "Invalid symbol or interval"})
                     return
-                bot.update(running=True, symbol=symbol, interval=interval, action="waiting for signal")
+                bot.update(running=True, symbol=symbol, interval=interval, action="waiting for signal", mode="paper")
             elif action == "stop":
                 if account.position is not None:
                     candles = fetch_candles(bot["symbol"], bot["interval"])
                     account.update("FLAT", float(candles[-1]["close"]))
-                bot.update(running=False, action="paused")
+                bot.update(running=False, action="paused", mode="paper")
             else:
                 self.send_json(400, {"error": "Action must be start or stop"})
                 return
             self.send_json(200, {"bot": dict(bot)})
         except (ValueError, json.JSONDecodeError):
             self.send_json(400, {"error": "Invalid request body"})
+
+    def is_authenticated(self):
+        cookie_header = self.headers.get("Cookie", "")
+        cookies = SimpleCookie()
+        try:
+            cookies.load(cookie_header)
+        except Exception:
+            return False
+        morsel = cookies.get(SESSION_COOKIE)
+        return bool(morsel and is_session_token_valid(morsel.value))
+
+    def session_cookie(self, value, max_age=43200):
+        return f"{SESSION_COOKIE}={value}; Path=/; Max-Age={max_age}; HttpOnly; Secure; SameSite=Strict"
+
+    def require_auth(self):
+        if self.is_authenticated():
+            return True
+        self.send_json(401, {"error": "Sign in to use account and bot controls"})
+        return False
+
+    def login(self):
+        if not password_is_configured():
+            self.send_json(503, {"error": "Set DASHBOARD_PASSWORD in Replit Secrets before signing in"})
+            return
+        now = time.time()
+        ip = self.client_address[0]
+        recent = [stamp for stamp in LOGIN_FAILURES.get(ip, []) if now - stamp < 60]
+        if len(recent) >= 5:
+            self.send_json(429, {"error": "Too many sign-in attempts. Wait one minute and try again."})
+            return
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            if length > 4096:
+                self.send_json(413, {"error": "Request is too large"})
+                return
+            payload = json.loads(self.rfile.read(length))
+            if not check_password(payload.get("password", "")):
+                recent.append(now)
+                LOGIN_FAILURES[ip] = recent
+                self.send_json(401, {"error": "Password not accepted"})
+                return
+            token = make_session_token()
+            if token is None:
+                self.send_json(503, {"error": "Session signing is not configured"})
+                return
+            LOGIN_FAILURES.pop(ip, None)
+            self.send_json(200, {"authenticated": True}, {
+                "Set-Cookie": self.session_cookie(token),
+            })
+        except (ValueError, json.JSONDecodeError):
+            self.send_json(400, {"error": "Invalid sign-in request"})
 
     def update_settings(self):
         if bot["running"]:
@@ -270,12 +344,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
             order_notional = float(payload["orderNotional"])
             if not isinstance(auto_size, bool):
                 raise ValueError("autoSize must be a boolean")
-            if not 1 <= starting_balance <= 10_000_000:
-                raise ValueError("Starting balance must be between $1 and $10,000,000")
+            if not 0.01 <= starting_balance <= 10_000_000:
+                raise ValueError("Starting balance must be between $0.01 and $10,000,000")
             if leverage not in range(1, MAX_LEVERAGE + 1):
                 raise ValueError(f"Leverage must be between 1x and {MAX_LEVERAGE}x")
-            if not 1 <= order_notional <= 1_000_000:
-                raise ValueError("Manual order size must be between $1 and $1,000,000")
+            if not 0.01 <= order_notional <= 1_000_000:
+                raise ValueError("Paper order size must be between $0.01 and $1,000,000")
             account.reset(starting_balance, leverage, auto_size, order_notional)
             self.send_json(200, {"settings": {
                 "startingBalance": account.starting_cash,
@@ -286,47 +360,34 @@ class DashboardHandler(BaseHTTPRequestHandler):
         except (KeyError, ValueError, json.JSONDecodeError):
             self.send_json(400, {"error": "Invalid settings"})
 
-    def place_kalshi_order(self):
-        if not kalshi_client:
-            self.send_json(503, {"error": "Set KALSHI_KEY_ID and KALSHI_KEY_PATH to enable live Kalshi trading"})
-            return
-        try:
-            length = int(self.headers.get("Content-Length", "0"))
-            payload = json.loads(self.rfile.read(length))
-            ticker = str(payload["ticker"]).upper()
-            side = str(payload["side"]).lower()
-            count = int(payload["count"])
-            price = float(payload["price"])
-            if side not in ("bid", "ask"):
-                raise ValueError("side must be bid or ask")
-            if not re.fullmatch(r"[A-Z0-9\-]{1,40}", ticker):
-                raise ValueError("Invalid ticker")
-            if count < 1 or count > 100_000:
-                raise ValueError("count must be between 1 and 100,000")
-            if not 0.01 <= price <= 0.99:
-                raise ValueError("price must be between $0.01 and $0.99")
-            result = kalshi_client.place_order(
-                ticker, side, count, price,
-                client_order_id=str(uuid.uuid4()),
-            )
-            self.send_json(200, {"order": result})
-        except (KeyError, ValueError, json.JSONDecodeError) as error:
-            self.send_json(400, {"error": str(error)})
-        except Exception as error:
-            self.send_json(502, {"error": str(error)})
-
     def log_message(self, format_string, *args):
         return
 
 
+def paper_bot_worker():
+    """Keep paper simulation running even when no browser tab is polling."""
+    while True:
+        if bot["running"]:
+            try:
+                candles = fetch_candles(bot["symbol"], bot["interval"])
+                if candles:
+                    closes = [float(candle["close"]) for candle in candles]
+                    indicators, direction = calculate_all_indicators(candles, closes)
+                    bot["action"] = account.update(direction, closes[-1])
+                    bot["lastUpdate"] = datetime.now(timezone.utc).isoformat()
+                    bot["score"] = indicators.get("compositeScore")
+                    if account.halted:
+                        bot.update(running=False, action="daily loss stop reached")
+            except Exception:
+                bot["action"] = "feed error; waiting to retry"
+        time.sleep(15)
+
+
 def main():
     server = ThreadingHTTPServer((HOST, PORT), DashboardHandler)
-    print(f"Signal desk: http://{HOST}:{PORT}")
-    if trading_mode == "live":
-        env_label = "demo" if kalshi_client.demo else "PRODUCTION"
-        print(f"Kalshi API connected ({env_label}). Live order placement enabled.")
-    else:
-        print("Paper mode. Set KALSHI_KEY_ID and KALSHI_KEY_PATH for live Kalshi trading.")
+    threading.Thread(target=paper_bot_worker, daemon=True).start()
+    print(f"Signal desk listening on {HOST}:{PORT}")
+    print("Paper trading only. Kraken Futures account access, when configured, is read-only.")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

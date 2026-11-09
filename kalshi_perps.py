@@ -105,14 +105,13 @@ class Position:
 
 
 class PaperAccount:
-    """Simulated trading account for paper-mode backtesting.
+    """Simulated account for paper-mode strategy testing.
 
-    Leverage can be set up to 20x for aggressive compounding simulations.
-    Auto sizing uses up to 10% of equity as margin (adjustable), multiplied by
-    leverage.  All values are simulated — no real exchange is involved.
+    Paper positions are fractional and are not subject to exchange minimums.
+    All values are simulated; this class cannot place exchange orders.
     """
 
-    def __init__(self, starting_cash=10_000.0, position_fraction=0.10, daily_loss_limit=0.05, leverage=1, auto_size=True, order_notional=100.0, max_leverage=20):
+    def __init__(self, starting_cash=10_000.0, position_fraction=0.05, daily_loss_limit=0.05, leverage=1, auto_size=True, order_notional=100.0, max_leverage=2):
         self.position_fraction = position_fraction
         self.daily_loss_limit = daily_loss_limit
         self.max_leverage = max_leverage
@@ -150,11 +149,11 @@ class PaperAccount:
 
     def _order_notional(self, price):
         risk_cap = max(0.0, self.equity(price)) * self.position_fraction * self.leverage
-        if risk_cap < 1:
+        if risk_cap <= 0:
             return 0.0
         if self.auto_size:
             return risk_cap
-        return min(max(1.0, self.order_notional), risk_cap)
+        return min(max(0.01, self.order_notional), risk_cap)
 
     def update(self, direction, price, now=None):
         now = now or datetime.now(timezone.utc)
@@ -179,8 +178,8 @@ class PaperAccount:
             self._close(price)
         if desired_side and self.position is None:
             notional = self._order_notional(price)
-            if notional < 1:
-                return "paper order below $1 minimum"
+            if notional <= 0:
+                return "insufficient simulated balance"
             self.position = Position(desired_side, notional / price, price, self.leverage)
             return "opened paper long" if desired_side > 0 else "opened paper short"
         if self.position is None:
